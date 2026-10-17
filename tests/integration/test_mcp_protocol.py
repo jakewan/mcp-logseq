@@ -84,10 +84,12 @@ async def test_read_only_app_serves_no_write_tools():
     assert _WRITE_TOOL_NAMES.isdisjoint({t.name for t in result.tools})
 
 
-# A client that gates writes (a read-only planning mode, an approval prompt)
-# treats a tool without readOnlyHint as a write, so an unannotated read prompts
-# on every call. Every served tool must appear in one of these sets, so a new
-# tool is classified on purpose rather than inheriting either default.
+# MCP's readOnlyHint defaults to false, so a client that gates writes (Claude
+# Code's plan mode, for one) treats an unannotated tool as a write and prompts
+# on every call. Every tool the server can serve must appear in one of these
+# sets, so a new tool is classified on purpose rather than inheriting either
+# default. sync_vector_db is a read: it only returns instructions for running
+# the external logseq-sync CLI.
 _EXPECTED_READ_TOOLS = frozenset(
     {
         "list_pages",
@@ -101,23 +103,50 @@ _EXPECTED_READ_TOOLS = frozenset(
         "get_page_backlinks",
         "vector_search",
         "vector_db_status",
+        "sync_vector_db",
     }
 )
-_EXPECTED_WRITE_TOOLS = _WRITE_TOOL_NAMES | {"sync_vector_db"}
+_EXPECTED_WRITE_TOOLS = _WRITE_TOOL_NAMES
+_VECTOR_TOOLS = frozenset({"vector_search", "vector_db_status", "sync_vector_db"})
+
+
+def _enable_vector_tools(monkeypatch, tmp_path):
+    """Register the vector tools, which build_app serves only when configured."""
+    from mcp_logseq.config import EmbedderConfig, VectorConfig
+
+    config = VectorConfig(
+        enabled=True,
+        db_path=str(tmp_path / "vector"),
+        embedder=EmbedderConfig(provider="ollama", model="placeholder"),
+        graph_path=str(tmp_path / "graph"),
+    )
+    monkeypatch.setattr("mcp_logseq.config.load_vector_config", lambda: config)
 
 
 @pytest.mark.asyncio
-async def test_tools_declare_whether_they_are_read_only():
-    async with _connected() as (session, _):
+@pytest.mark.parametrize("read_only", [False, True])
+@pytest.mark.parametrize("vector", [False, True])
+async def test_tools_declare_whether_they_are_read_only(
+    monkeypatch, tmp_path, read_only, vector
+):
+    monkeypatch.delenv("LOGSEQ_CONFIG_FILE", raising=False)
+    if vector:
+        _enable_vector_tools(monkeypatch, tmp_path)
+    async with _connected(read_only=read_only) as (session, _):
         result = await session.list_tools()
+
+    served = {tool.name for tool in result.tools}
+    # Without this, a vector case that silently served no vector tools would
+    # pass while checking nothing behind the gate.
+    assert (served >= _VECTOR_TOOLS) if vector else served.isdisjoint(_VECTOR_TOOLS)
 
     for tool in result.tools:
         assert tool.name in _EXPECTED_READ_TOOLS | _EXPECTED_WRITE_TOOLS, (
             f"{tool.name} is not classified as read-only or write"
         )
-        read_only = bool(tool.annotations and tool.annotations.read_only_hint)
-        assert read_only == (tool.name in _EXPECTED_READ_TOOLS), (
-            f"{tool.name} read_only_hint = {read_only}"
+        got = bool(tool.annotations and tool.annotations.read_only_hint)
+        assert got == (tool.name in _EXPECTED_READ_TOOLS), (
+            f"{tool.name} read_only_hint = {got}"
         )
 
 

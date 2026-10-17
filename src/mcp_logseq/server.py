@@ -10,6 +10,7 @@ from mcp.types import (
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
+    Tool,
     ToolAnnotations,
 )
 
@@ -37,10 +38,12 @@ _WRITE_TOOL_NAMES = frozenset(
     }
 )
 
-# Names of the tools that only read. They are listed with readOnlyHint, because
-# a client that gates writes (a read-only planning mode, an approval prompt)
-# treats a tool without it as a write and asks before every call. Anything not
-# named here keeps the write default, ``sync_vector_db`` included.
+# Names of the tools that only read. They are listed with readOnlyHint because
+# MCP's readOnlyHint defaults to false, so a client that gates writes (Claude
+# Code's plan mode, for one) treats an unannotated tool as a write and prompts
+# before every call. ``sync_vector_db`` is here despite its name: it only
+# returns instructions for the external logseq-sync CLI. Anything not named
+# here keeps the write default.
 _READ_TOOL_NAMES = frozenset(
     {
         "list_pages",
@@ -54,9 +57,17 @@ _READ_TOOL_NAMES = frozenset(
         "get_page_backlinks",
         "vector_search",
         "vector_db_status",
+        "sync_vector_db",
     }
 )
-_READ_ONLY_ANNOTATIONS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+
+
+def _annotate_read_only(tool: Tool) -> Tool:
+    """Mark ``tool`` read-only, keeping any annotations its handler declares."""
+    annotations = (tool.annotations or ToolAnnotations()).model_copy(
+        update={"read_only_hint": True, "open_world_hint": False}
+    )
+    return tool.model_copy(update={"annotations": annotations})
 
 
 def _register_all_tool_handlers(handlers: dict, read_only: bool = False) -> None:
@@ -188,8 +199,7 @@ def build_app(read_only: bool = False) -> tuple[Server, dict]:
         """List available tools."""
         logger.debug("Listing tools")
         tools_list = [
-            tool.model_copy(update={"annotations": _READ_ONLY_ANNOTATIONS})
-            if tool.name in _READ_TOOL_NAMES
+            _annotate_read_only(tool) if tool.name in _READ_TOOL_NAMES
             else tool
             for tool in (th.get_tool_description() for th in handlers.values())
         ]
