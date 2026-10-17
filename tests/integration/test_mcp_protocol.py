@@ -84,6 +84,43 @@ async def test_read_only_app_serves_no_write_tools():
     assert _WRITE_TOOL_NAMES.isdisjoint({t.name for t in result.tools})
 
 
+# A client that gates writes (a read-only planning mode, an approval prompt)
+# treats a tool without readOnlyHint as a write, so an unannotated read prompts
+# on every call. Every served tool must appear in one of these sets, so a new
+# tool is classified on purpose rather than inheriting either default.
+_EXPECTED_READ_TOOLS = frozenset(
+    {
+        "list_pages",
+        "get_page_content",
+        "get_block",
+        "search",
+        "query",
+        "find_pages_by_property",
+        "get_pages_from_namespace",
+        "get_pages_tree_from_namespace",
+        "get_page_backlinks",
+        "vector_search",
+        "vector_db_status",
+    }
+)
+_EXPECTED_WRITE_TOOLS = _WRITE_TOOL_NAMES | {"sync_vector_db"}
+
+
+@pytest.mark.asyncio
+async def test_tools_declare_whether_they_are_read_only():
+    async with _connected() as (session, _):
+        result = await session.list_tools()
+
+    for tool in result.tools:
+        assert tool.name in _EXPECTED_READ_TOOLS | _EXPECTED_WRITE_TOOLS, (
+            f"{tool.name} is not classified as read-only or write"
+        )
+        read_only = bool(tool.annotations and tool.annotations.read_only_hint)
+        assert read_only == (tool.name in _EXPECTED_READ_TOOLS), (
+            f"{tool.name} read_only_hint = {read_only}"
+        )
+
+
 @pytest.mark.asyncio
 async def test_call_tool_returns_handler_content():
     async with _connected() as (session, handlers):

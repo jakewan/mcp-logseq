@@ -10,6 +10,7 @@ from mcp.types import (
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
+    ToolAnnotations,
 )
 
 logger = logging.getLogger("mcp-logseq")
@@ -35,6 +36,27 @@ _WRITE_TOOL_NAMES = frozenset(
         "set_block_properties",
     }
 )
+
+# Names of the tools that only read. They are listed with readOnlyHint, because
+# a client that gates writes (a read-only planning mode, an approval prompt)
+# treats a tool without it as a write and asks before every call. Anything not
+# named here keeps the write default, ``sync_vector_db`` included.
+_READ_TOOL_NAMES = frozenset(
+    {
+        "list_pages",
+        "get_page_content",
+        "get_block",
+        "search",
+        "query",
+        "find_pages_by_property",
+        "get_pages_from_namespace",
+        "get_pages_tree_from_namespace",
+        "get_page_backlinks",
+        "vector_search",
+        "vector_db_status",
+    }
+)
+_READ_ONLY_ANNOTATIONS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
 
 def _register_all_tool_handlers(handlers: dict, read_only: bool = False) -> None:
@@ -165,7 +187,12 @@ def build_app(read_only: bool = False) -> tuple[Server, dict]:
     ) -> ListToolsResult:
         """List available tools."""
         logger.debug("Listing tools")
-        tools_list = [th.get_tool_description() for th in handlers.values()]
+        tools_list = [
+            tool.model_copy(update={"annotations": _READ_ONLY_ANNOTATIONS})
+            if tool.name in _READ_TOOL_NAMES
+            else tool
+            for tool in (th.get_tool_description() for th in handlers.values())
+        ]
         logger.debug(f"Found {len(tools_list)} tools")
         return ListToolsResult(tools=tools_list)
 
